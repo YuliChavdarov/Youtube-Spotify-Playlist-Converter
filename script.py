@@ -7,68 +7,64 @@ load_dotenv()
 import os
 import googleapiclient.discovery
 
-myUserID = os.getenv("myUserID")
-myToken = os.getenv("myToken")
-spotifyPlaylist = os.getenv("spotifyPlaylist")
-youtubePlaylist = os.getenv("youtubePlaylist")
+spotifyUserId = os.getenv("spotifyUserId")
+spotifyAuthToken = os.getenv("spotifyAuthToken")
+spotifyPlaylistID = os.getenv("spotifyPlaylist").split("/").pop()
+youtubePlaylist = os.getenv("youtubePlaylist").split("list=").pop()
 youtube_API_key = os.getenv("youtube_API_key")
 
+api_service_name = "youtube"
+api_version = "v3"
+
 class PlaylistConverter:
-    def __init__(self):
-        self.user_id = myUserID
-        self.token = myToken
-        self.youtube = self.getYoutubeClient()
 
+    def getSongNames(self, playlist_ID, startIndex, endIndex):
+        youtube = googleapiclient.discovery.build(api_service_name, api_version, developerKey = youtube_API_key)
 
-    def getYoutubeClient(self):
-        api_service_name = "youtube"
-        api_version = "v3"
-
-        youtube = googleapiclient.discovery.build(
-        api_service_name, api_version, developerKey = youtube_API_key)
-
-        return youtube
-
-
-    def getSongNames(self, playlist_ID, startFrom, songCount):
-        request = self.youtube.playlistItems().list(
-        part="snippet,contentDetails",
-        maxResults=50,
-        playlistId= playlist_ID
+        request = youtube.playlistItems().list(
+            part="snippet",
+            maxResults=50,
+            playlistId=playlist_ID
         )
-        response = request.execute()
+
+        try:
+            response = request.execute()
+        except:
+            print("An error occured. The Youtube API key might be invalid or inactive.")
+            return []
+
 
         nextPageToken = response.get('nextPageToken')
 
-        while ("nextPageToken" in response):
-            nextPage = self.youtube.playlistItems().list(
-            part="snippet",
-            playlistId=playlist_ID,
-            maxResults="50",
-            pageToken=nextPageToken
-            ).execute()
-            response["items"] = response["items"] + nextPage["items"]
+        items = response["items"]
 
-            if 'nextPageToken' not in nextPage:
-                response.pop('nextPageToken', None)
-            else:
-                nextPageToken = nextPage['nextPageToken']
+        while (nextPageToken and len(items) < endIndex):
+            currentPage = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=playlist_ID,
+                maxResults=50,
+                pageToken=nextPageToken
+            ).execute()
+            items += currentPage["items"]
+            
+            nextPageToken = currentPage.get('nextPageToken')
 
         songNames = []
-        
-        for num, item in enumerate(response["items"], start = 1):
-            if num < startFrom:
+
+        for num, item in enumerate(items, start = 1):
+            if num < startIndex:
                 continue
-            elif len(songNames) < songCount:
+            elif len(songNames) <= endIndex - startIndex:
                 title = item["snippet"]["title"]
                 match = regex.findall(r"[\p{L}0-9 \";,&.'’+—–-]+ *[|—–-] *[\p{L}0-9 \";,&.'’—–-]+", title)
                 if match:
                     if regex.search(r" feat| ft| FEAT | FT", match[0]):
-                        songNames.append(regex.split(r" feat| ft| FEAT| FT", match[0])[0])
+                        beforeFeat = regex.split(r" feat| ft| FEAT| FT", match[0])[0]
+                        songNames.append(regex.sub(r" [x&—–-] ", " ", beforeFeat))
                         continue
-                    songNames.append(match[0])
+                    songNames.append(regex.sub(r" [x&—–-] ", " ", match[0]))
                 else:
-                    songNames.append(title)
+                    songNames.append(regex.sub(r" [x&—–-] ", " ", title))
             else:
                 break
 
@@ -86,25 +82,29 @@ class PlaylistConverter:
             headers = {
                 "Accept": "application/json",
                 "Content-Type":"application/json",
-                "Authorization" : "Bearer {0}".format(self.token)
+                "Authorization" : "Bearer {0}".format(spotifyAuthToken)
             })
 
-        if not response.json()["tracks"]["items"]:
+        if not response.ok or not response.json()["tracks"]["items"]:
             return None
 
         else:
             return response.json()["tracks"]["items"][0]["uri"]
 
 
-    def addSongsToSpotify(self, spotifyPlaylistID, youtubePlaylistID, startFrom, songCount, reversed = False):
+    def addSongsToSpotifyPlaylist(self, spotifyPlaylistID, youtubePlaylistID, startIndex, endIndex, reversed = False):
         endpoint = "https://api.spotify.com/v1/playlists/{0}/tracks".format(spotifyPlaylistID)
 
-        songNames = self.getSongNames(youtubePlaylistID, startFrom, songCount)
+        songNames = self.getSongNames(youtubePlaylistID, startIndex, endIndex)
         URIs = []
+
+        songsAdded = len(songNames)
+
         for song in songNames:
             URI = self.getSpotifyURI(song)
             if URI == None:
                 print("\"{0}\" was not added".format(song))
+                songsAdded -= 1
                 continue
             else:
                 URIs.append(URI)
@@ -112,15 +112,21 @@ class PlaylistConverter:
         if reversed:
             URIs.reverse()
 
-        request_body = json.dumps(URIs)
-
         response = requests.post(
             endpoint,
-            data = request_body,
-            headers = {"Content-Type":"application/json",
-            "Authorization" : "Bearer {0}".format(self.token)
+            data = json.dumps(URIs),
+            headers = {
+                "Content-Type":"application/json",
+                "Authorization" : "Bearer {0}".format(spotifyAuthToken)
             })
+
+        if response.ok:
+            print("Done! {0} songs added.".format(songsAdded))
+            print("{0} songs not added. They are either not on Spotify, or you have to add them manually.".format(len(songNames) - songsAdded))
+
+        elif response.status_code == 401:
+            print("An error occured. The Spotify token might be invalid or expired.")
 
 
 script = PlaylistConverter()
-script.addSongsToSpotify(spotifyPlaylist ,youtubePlaylist, 1, 10, True)
+script.addSongsToSpotifyPlaylist(spotifyPlaylistID, youtubePlaylist, 1, 10, True)
